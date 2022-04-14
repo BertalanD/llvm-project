@@ -674,6 +674,7 @@ set(files
   __support/musl/xlocale.h
   __support/newlib/xlocale.h
   __support/openbsd/xlocale.h
+  __support/serenity/xlocale.h
   __support/win32/locale_win32.h
   __support/xlocale/__nop_locale_mgmt.h
   __support/xlocale/__posix_l_fallback.h
