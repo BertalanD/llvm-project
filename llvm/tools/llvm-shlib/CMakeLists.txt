@@ -40,6 +40,7 @@ if(LLVM_BUILD_LLVM_DYLIB)
      OR ("${CMAKE_SYSTEM_NAME}" STREQUAL "Fuchsia")
      OR ("${CMAKE_SYSTEM_NAME}" STREQUAL "DragonFly")
      OR ("${CMAKE_SYSTEM_NAME}" STREQUAL "Android")
+     OR ("${CMAKE_SYSTEM_NAME}" STREQUAL "SerenityOS")
      OR ("${CMAKE_SYSTEM_NAME}" STREQUAL "SunOS")) # FIXME: It should be "GNU ld for elf"
     configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/simple_version_script.map.in
@@ -47,7 +48,7 @@ if(LLVM_BUILD_LLVM_DYLIB)
 
     # GNU ld doesn't resolve symbols in the version script.
     set(LIB_NAMES -Wl,--whole-archive ${LIB_NAMES} -Wl,--no-whole-archive)
-    if (NOT LLVM_LINKER_IS_SOLARISLD AND NOT MINGW)
+    if (NOT LLVM_LINKER_IS_SOLARISLD AND NOT MINGW AND (NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "SerenityOS"))
       # Solaris ld does not accept global: *; so there is no way to version *all* global symbols
       set(LIB_NAMES -Wl,--version-script,${LLVM_LIBRARY_DIR}/tools/llvm-shlib/simple_version_script.map ${LIB_NAMES})
     endif()
