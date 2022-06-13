@@ -302,49 +302,124 @@ static void handleSegmentBoundarySymbol(const Undefined &sym, StringRef segName,
     seg->segmentEndSymbols.push_back(createBoundarySymbol(sym));
 }
 
-void lld::macho::treatUndefinedSymbol(const Undefined &sym, StringRef source) {
+struct UndefinedDiag {
+  struct Loc {
+    const InputSection *isec;
+    uint64_t off;
+  };
+
+  std::vector<std::string> namedLocs;
+  std::vector<Loc> refLocs;
+};
+
+static DenseMap<const Symbol *, UndefinedDiag> undefs;
+
+// Try to find a definition for an undefined symbol.
+// Returns true if a definition was found and no diagnostics are needed.
+static bool recoverFromUndefinedSymbol(const Undefined &sym) {
   // Handle start/end symbols.
   StringRef name = sym.getName();
-  if (name.consume_front("section$start$"))
-    return handleSectionBoundarySymbol(sym, name, Boundary::Start);
-  if (name.consume_front("section$end$"))
-    return handleSectionBoundarySymbol(sym, name, Boundary::End);
-  if (name.consume_front("segment$start$"))
-    return handleSegmentBoundarySymbol(sym, name, Boundary::Start);
-  if (name.consume_front("segment$end$"))
-    return handleSegmentBoundarySymbol(sym, name, Boundary::End);
+  if (name.consume_front("section$start$")) {
+    handleSectionBoundarySymbol(sym, name, Boundary::Start);
+    return true;
+  }
+  if (name.consume_front("section$end$")) {
+    handleSectionBoundarySymbol(sym, name, Boundary::End);
+    return true;
+  }
+  if (name.consume_front("segment$start$")) {
+    handleSegmentBoundarySymbol(sym, name, Boundary::Start);
+    return true;
+  }
+  if (name.consume_front("segment$end$")) {
+    handleSegmentBoundarySymbol(sym, name, Boundary::End);
+    return true;
+  }
 
   // Handle -U.
   if (config->explicitDynamicLookups.count(sym.getName())) {
     symtab->addDynamicLookup(sym.getName());
-    return;
+    return true;
   }
 
-  // Handle -undefined.
-  auto message = [source, &sym]() {
+  if (config->undefinedSymbolTreatment ==
+          UndefinedSymbolTreatment::dynamic_lookup ||
+      config->undefinedSymbolTreatment == UndefinedSymbolTreatment::suppress) {
+    symtab->addDynamicLookup(sym.getName());
+    return true;
+  }
+
+  // Note: We do not return true here, as we still want to add diagnostics.
+  if (config->undefinedSymbolTreatment == UndefinedSymbolTreatment::warning)
+    symtab->addDynamicLookup(sym.getName());
+
+  return false;
+}
+void lld::macho::treatUndefinedSymbol(const Undefined &sym,
+                                      const InputSection &isec, uint64_t off) {
+  if (recoverFromUndefinedSymbol(sym))
+    return;
+
+  assert(config->undefinedSymbolTreatment == UndefinedSymbolTreatment::error ||
+         config->undefinedSymbolTreatment ==
+                 UndefinedSymbolTreatment::warning &&
+             "other -undefined treatments should have been handled");
+
+  undefs[&sym].refLocs.push_back({&isec, off});
+}
+
+void lld::macho::treatUndefinedSymbol(const Undefined &sym, StringRef source) {
+  if (recoverFromUndefinedSymbol(sym))
+    return;
+
+  assert(config->undefinedSymbolTreatment == UndefinedSymbolTreatment::error ||
+         config->undefinedSymbolTreatment ==
+                 UndefinedSymbolTreatment::warning &&
+             "other -undefined treatments should have been handled");
+
+  undefs[&sym].namedLocs.push_back(source.str());
+}
+
+void lld::macho::reportUndefinedSymbols() {
+  for (auto &undef : undefs) {
+    auto &locs = undef.second;
     std::string message = "undefined symbol";
     if (config->archMultiple)
       message += (" for arch " + getArchitectureName(config->arch())).str();
-    message += ": " + toString(sym);
-    if (!source.empty())
-      message += "\n>>> referenced by " + source.str();
+    message += ": " + toString(*undef.first);
+
+    const size_t maxUndefinedReferences = 3;
+    size_t i = 0;
+    for (const auto &name : locs.namedLocs) {
+      if (i >= maxUndefinedReferences)
+        break;
+      message += "\n>>> referenced by " + name;
+      ++i;
+    }
+
+    // FIXME: DETERMINISM - SORT THESE
+    for (const auto &ref : locs.refLocs) {
+      if (i >= maxUndefinedReferences)
+        break;
+      // FIXME: Use debug info for printing source file and line
+      message += "\n>>> referenced by " + ref.isec->getLocation(ref.off);
+      message += (" offset " + Twine(ref.off)).str();
+      ++i;
+    }
+
+    size_t referenceCount = locs.namedLocs.size() + locs.refLocs.size();
+    if (referenceCount > maxUndefinedReferences)
+      message +=
+          ("\n>>> referenced " + Twine(referenceCount - i) + " more times")
+              .str();
+
+    if (config->undefinedSymbolTreatment == UndefinedSymbolTreatment::warning)
+      warn(message);
+    else if (config->undefinedSymbolTreatment ==
+             UndefinedSymbolTreatment::error)
+      error(message);
     else
-      message += "\n>>> referenced by " + toString(sym.getFile());
-    return message;
-  };
-  switch (config->undefinedSymbolTreatment) {
-  case UndefinedSymbolTreatment::error:
-    error(message());
-    break;
-  case UndefinedSymbolTreatment::warning:
-    warn(message());
-    LLVM_FALLTHROUGH;
-  case UndefinedSymbolTreatment::dynamic_lookup:
-  case UndefinedSymbolTreatment::suppress:
-    symtab->addDynamicLookup(sym.getName());
-    break;
-  case UndefinedSymbolTreatment::unknown:
-    llvm_unreachable("unknown -undefined TREATMENT");
+      llvm_unreachable("unexpected -undefined treatment");
   }
 }
 

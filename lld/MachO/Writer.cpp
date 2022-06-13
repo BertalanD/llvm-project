@@ -659,7 +659,7 @@ void Writer::scanRelocations() {
       }
       if (auto *sym = r.referent.dyn_cast<Symbol *>()) {
         if (auto *undefined = dyn_cast<Undefined>(sym))
-          treatUndefinedSymbol(*undefined);
+          treatUndefinedSymbol(*undefined, *isec, r.offset);
         // treatUndefinedSymbol() can replace sym with a DylibSymbol; re-check.
         if (!isa<Undefined>(sym) && validateSymbolRelocation(sym, isec, r))
           prepareSymbolRelocation(sym, isec, r);
@@ -1127,6 +1127,7 @@ void Writer::writeCodeSignature() {
 void Writer::writeOutputFile() {
   TimeTraceScope timeScope("Write output file");
   openFile();
+  reportUndefinedSymbols();
   if (errorCount())
     return;
   writeSections();
@@ -1149,6 +1150,7 @@ template <class LP> void Writer::run() {
   scanRelocations();
 
   // Do not proceed if there was an undefined symbol.
+  reportUndefinedSymbols();
   if (errorCount())
     return;
 

@@ -61,7 +61,9 @@ Defined::Defined(StringRefZ name, InputFile *file, InputSection *isec,
       auto next = std::next(it);
       if (next == rend)
         break;
-      if ((*it)->value < (*next)->value)
+      if ((*it)->value < (*next)->value ||
+          ((*it)->value == (*next)->value &&
+           ((*it)->isExternal() && !(*next)->isExternal())))
         std::swap(*next, *it);
       else
         break;

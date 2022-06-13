@@ -28,6 +28,7 @@ class MachHeaderSection;
 class Symbol;
 class Defined;
 class Undefined;
+struct Reloc;
 
 /*
  * Note that the SymbolTable handles name collisions by calling
@@ -69,7 +70,10 @@ private:
   std::vector<Symbol *> symVector;
 };
 
-void treatUndefinedSymbol(const Undefined &, StringRef source = "");
+void treatUndefinedSymbol(const Undefined &, StringRef source);
+void treatUndefinedSymbol(const Undefined &, const InputSection &,
+                          uint64_t off);
+void reportUndefinedSymbols();
 
 extern std::unique_ptr<SymbolTable> symtab;
 

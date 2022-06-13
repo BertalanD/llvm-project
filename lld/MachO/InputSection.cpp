@@ -61,7 +61,7 @@ std::string InputSection::getLocation(uint64_t off) const {
   for (size_t i = 0; i < symbols.size(); ++i)
     if (symbols[i]->value <= off &&
         (i + 1 == symbols.size() || symbols[i + 1]->value > off))
-      return (toString(getFile()) + ":(symbol " + symbols.front()->getName() +
+      return (toString(getFile()) + ":(symbol " + symbols[i]->getName() +
               "+0x" + Twine::utohexstr(off - symbols[i]->value) + ")")
           .str();
 
