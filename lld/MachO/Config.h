@@ -205,6 +205,8 @@ struct Configuration {
 
   llvm::StringRef osoPrefix;
 
+  bool emitChainedFixups = false;
+
   llvm::MachO::Architecture arch() const { return platformInfo.target.Arch; }
 
   llvm::MachO::PlatformType platform() const {

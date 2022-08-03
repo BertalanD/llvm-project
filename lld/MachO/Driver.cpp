@@ -957,6 +957,25 @@ static bool dataConstDefault(const InputArgList &args) {
   return false;
 }
 
+static bool chainedFixupsDefault() {
+  static const std::vector<std::pair<PlatformType, VersionTuple>> minVersion = {
+      // FIXME: ld64 source specifies BridgeOS version "future"
+      {PLATFORM_MACOS, VersionTuple(11, 0)},
+      {PLATFORM_IOS, VersionTuple(14, 0)},
+      {PLATFORM_TVOS, VersionTuple(14, 0)},
+      {PLATFORM_WATCHOS, VersionTuple(7, 0)},
+  };
+  PlatformType platform = removeSimulator(config->platformInfo.target.Platform);
+  auto it = llvm::find_if(minVersion,
+                          [&](const auto &p) { return p.first == platform; });
+
+  // FIXME: Add support for 32-bit chained fixups?
+  if (target->wordSize != 8)
+    return false;
+
+  return it != minVersion.end() && config->platformInfo.minimum >= it->second;
+}
+
 void SymbolPatterns::clear() {
   literals.clear();
   globs.clear();
@@ -1642,6 +1661,9 @@ bool macho::link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
   config->timeTraceEnabled = args.hasArg(OPT_time_trace_eq);
   config->timeTraceGranularity =
       args::getInteger(args, OPT_time_trace_granularity_eq, 500);
+
+  config->emitChainedFixups = args.hasArg(OPT_fixup_chains, OPT_no_fixup_chains,
+                                          chainedFixupsDefault());
 
   // Initialize time trace profiler.
   if (config->timeTraceEnabled)

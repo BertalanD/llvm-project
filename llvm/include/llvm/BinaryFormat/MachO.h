@@ -1015,14 +1015,81 @@ struct dyld_chained_fixups_header {
   uint32_t symbols_format; ///< 0 => uncompressed, 1 => zlib compressed
 };
 
+enum {
+  DYLD_CHAINED_IMPORT = 1,
+  DYLD_CHAINED_IMPORT_ADDEND = 2,
+  DYLD_CHAINED_IMPORT_ADDEND64 = 3,
+};
+
 /// dyld_chained_starts_in_image is embedded in LC_DYLD_CHAINED_FIXUPS payload.
 /// Each each seg_info_offset entry is the offset into this struct for that
 /// segment followed by pool of dyld_chain_starts_in_segment data.
 struct dyld_chained_starts_in_image {
-  uint32_t    seg_count;
-  uint32_t    seg_info_offset[1];
+  uint32_t seg_count;
+  uint32_t seg_info_offset[1];
 };
-  
+
+struct dyld_chained_starts_in_segment {
+  uint32_t size;
+  uint16_t page_size;
+  uint16_t pointer_format;
+  uint64_t segment_offset;
+  uint32_t max_valid_pointer;
+  uint16_t page_count;
+  uint16_t page_start[1];
+};
+
+enum {
+  DYLD_CHAINED_PTR_START_NONE = 0xFFFF,
+  DYLD_CHAINED_PTR_START_MULTI = 0x8000,
+  DYLD_CHAINED_PTR_START_LAST = 0x8000,
+};
+
+enum {
+  DYLD_CHAINED_PTR_ARM64E = 1,
+  DYLD_CHAINED_PTR_64 = 2,
+  DYLD_CHAINED_PTR_32 = 3,
+  DYLD_CHAINED_PTR_32_CACHE = 4,
+  DYLD_CHAINED_PTR_32_FIRMWARE = 5,
+};
+
+struct dyld_chained_ptr_64_rebase {
+  uint64_t target : 36;
+  uint64_t high8 : 8;
+  uint64_t reserved : 7;
+  uint64_t next : 12;
+  uint64_t bind : 1;
+};
+
+struct dyld_chained_ptr_64_bind {
+  uint64_t ordinal : 24;
+  uint64_t addend : 8;
+  uint64_t reserved : 19;
+  uint64_t next : 12;
+  uint64_t bind : 1;
+};
+
+struct dyld_chained_import {
+  uint32_t lib_ordinal : 8;
+  uint32_t weak_import : 1;
+  uint32_t name_offset : 23;
+};
+
+struct dyld_chained_import_addend {
+  uint32_t lib_ordinal : 8;
+  uint32_t weak_import : 1;
+  uint32_t name_offset : 23;
+  int32_t addend;
+};
+
+struct dyld_chained_import_addend64 {
+  uint64_t lib_ordinal : 16;
+  uint64_t weak_import : 1;
+  uint64_t reserved : 15;
+  uint64_t name_offset : 32;
+  uint64_t addend;
+};
+
 // Byte order swapping functions for MachO structs
 
 inline void swapStruct(fat_header &mh) {

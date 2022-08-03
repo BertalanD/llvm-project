@@ -182,6 +182,8 @@ void ConcatInputSection::writeTo(uint8_t *buf) {
     relocTargets.reserve(relocs.size());
 
   for (size_t i = 0; i < relocs.size(); i++) {
+    bool needsRebase = false;
+    const Symbol *bindSym = nullptr;
     const Reloc &r = relocs[i];
     uint8_t *loc = buf + r.offset;
     uint64_t referentVA = 0;
@@ -216,12 +218,70 @@ void ConcatInputSection::writeTo(uint8_t *buf) {
         // contiguous).
         if (isa<Defined>(referentSym))
           referentVA -= firstTLVDataSection->addr;
-      }
+        else
+          bindSym = referentSym;
+      } else
+        bindSym = referentSym;
     } else if (auto *referentIsec = r.referent.dyn_cast<InputSection *>()) {
       assert(!::shouldOmitFromOutput(referentIsec));
       referentVA = referentIsec->getVA(r.addend);
+      if (!r.pcrel) {
+        // fprintf(stderr, "!pcrel: %s\n",
+        // referentIsec->getName().str().data());
+        needsRebase = true;
+      }
     }
-    target->relocateOne(loc, r, referentVA, getVA() + r.offset);
+
+    if (auto *def = dyn_cast_or_null<Defined>(bindSym)) {
+      if (!def->isExternalWeakDef() && !def->interposable) {
+        bindSym = nullptr;
+        needsRebase = true;
+        // fprintf(stderr, "CHANGE %s\n", def->getName().str().data());
+      }
+    } else if (!isa_and_present<DylibSymbol>(bindSym)) {
+      bindSym = nullptr;
+    }
+
+    if (config->emitChainedFixups && needsRebase && !isEhFrameSection(this) &&
+        target->hasAttr(r.type, RelocAttrBits::UNSIGNED)) {
+      /*
+      auto f =
+          llvm::find_if(in.chainedFixups->fixups, [&](const Location &loc) {
+            return dyn_cast<ConcatInputSection>(loc.isec) == this &&
+                   parent->getSegmentOffset() + getOffset(r.offset) ==
+                       loc.offset;
+          });
+          */
+      // fprintf(stderr, "r.offset = %llu\nsegmentOffset =  %llu\n",
+      //         getOffset(r.offset), parent->getSegmentOffset());
+      // if (f == in.chainedFixups->fixups.end())
+      //   __builtin_debugtrap();
+      // assert(f != in.chainedFixups->fixups.end());
+      auto *rebase = reinterpret_cast<dyld_chained_ptr_64_rebase *>(loc);
+      rebase->target = referentVA;
+      rebase->high8 = referentVA >> 56;
+      rebase->reserved = 0;
+      rebase->next = 0;
+      rebase->bind = 0;
+    } else if (config->emitChainedFixups && bindSym != nullptr &&
+               target->hasAttr(r.type, RelocAttrBits::UNSIGNED)) {
+      auto *bind = reinterpret_cast<dyld_chained_ptr_64_bind *>(loc);
+      auto maybeBinding = in.chainedFixups->getBinding(bindSym, 0);
+      if (!maybeBinding.has_value()) {
+        // fprintf(stderr, "%s\n", this->getName().str().data());
+        // fprintf(stderr, "%s\n", bindSym->getName().str().data());
+        __builtin_debugtrap();
+        target->relocateOne(loc, r, referentVA, getVA() + r.offset);
+        continue;
+      }
+      bind->ordinal = maybeBinding->first;
+      bind->addend = maybeBinding->second;
+      bind->reserved = 0;
+      bind->next = 0;
+      bind->bind = 1;
+    } else {
+      target->relocateOne(loc, r, referentVA, getVA() + r.offset);
+    }
 
     if (!optimizationHints.empty())
       relocTargets.push_back(referentVA);

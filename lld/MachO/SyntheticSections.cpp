@@ -136,10 +136,12 @@ void MachHeaderSection::writeTo(uint8_t *buf) const {
   if (config->outputType == MH_DYLIB && config->applicationExtension)
     hdr->flags |= MH_APP_EXTENSION_SAFE;
 
-  if (in.exports->hasWeakSymbol || in.weakBinding->hasNonWeakDefinition())
+  if (in.exports->hasWeakSymbol ||
+      (in.weakBinding && in.weakBinding->hasNonWeakDefinition()))
     hdr->flags |= MH_WEAK_DEFINES;
 
-  if (in.exports->hasWeakSymbol || in.weakBinding->hasEntry())
+  if (in.exports->hasWeakSymbol ||
+      (in.weakBinding && in.weakBinding->hasEntry()))
     hdr->flags |= MH_BINDS_TO_WEAK;
 
   for (const OutputSegment *seg : outputSegments) {
@@ -305,15 +307,26 @@ void macho::addNonLazyBindingEntries(const Symbol *sym,
                                      const InputSection *isec, uint64_t offset,
                                      int64_t addend) {
   if (const auto *dysym = dyn_cast<DylibSymbol>(sym)) {
-    in.binding->addEntry(dysym, isec, offset, addend);
-    if (dysym->isWeakDef())
-      in.weakBinding->addEntry(sym, isec, offset, addend);
+    if (config->emitChainedFixups) {
+      in.chainedFixups->addBinding(dysym, isec, offset, addend);
+    } else {
+      in.binding->addEntry(dysym, isec, offset, addend);
+      if (dysym->isWeakDef())
+        in.weakBinding->addEntry(sym, isec, offset, addend);
+    }
   } else if (const auto *defined = dyn_cast<Defined>(sym)) {
-    in.rebase->addEntry(isec, offset);
-    if (defined->isExternalWeakDef())
-      in.weakBinding->addEntry(sym, isec, offset, addend);
-    else if (defined->interposable)
-      in.binding->addEntry(sym, isec, offset, addend);
+    if (config->emitChainedFixups) {
+      if (defined->isExternalWeakDef() || defined->interposable)
+        in.chainedFixups->addBinding(sym, isec, offset, addend);
+      else
+        in.chainedFixups->addRebase(isec, offset);
+    } else {
+      in.rebase->addEntry(isec, offset);
+      if (defined->isExternalWeakDef())
+        in.weakBinding->addEntry(sym, isec, offset, addend);
+      else if (defined->interposable)
+        in.binding->addEntry(sym, isec, offset, addend);
+    }
   } else {
     // Undefined symbols are filtered out in scanRelocations(); we should never
     // get here
@@ -331,9 +344,26 @@ void NonLazyPointerSectionBase::addEntry(Symbol *sym) {
 }
 
 void NonLazyPointerSectionBase::writeTo(uint8_t *buf) const {
-  for (size_t i = 0, n = entries.size(); i < n; ++i)
-    if (auto *defined = dyn_cast<Defined>(entries[i]))
-      write64le(&buf[i * target->wordSize], defined->getVA());
+  if (config->emitChainedFixups) {
+    for (size_t i = 0, n = entries.size(); i < n; ++i)
+      if (auto *defined = dyn_cast<Defined>(entries[i]);
+          defined && !defined->isExternalWeakDef()) {
+        write64le(&buf[i * target->wordSize], defined->getVA());
+      } else {
+        auto *bind = reinterpret_cast<dyld_chained_ptr_64_bind *>(
+            &buf[i * target->wordSize]);
+        auto maybeBinding = in.chainedFixups->getBinding(entries[i], 0);
+        bind->ordinal = maybeBinding->first;
+        bind->addend = maybeBinding->second;
+        bind->reserved = 0;
+        bind->next = 0;
+        bind->bind = 1;
+      }
+  } else {
+    for (size_t i = 0, n = entries.size(); i < n; ++i)
+      if (auto *defined = dyn_cast<Defined>(entries[i]))
+        write64le(&buf[i * target->wordSize], defined->getVA());
+  }
 }
 
 GotSection::GotSection()
@@ -677,7 +707,9 @@ uint64_t StubHelperSection::getSize() const {
          in.lazyBinding->getEntries().size() * target->stubHelperEntrySize;
 }
 
-bool StubHelperSection::isNeeded() const { return in.lazyBinding->isNeeded(); }
+bool StubHelperSection::isNeeded() const {
+  return in.lazyBinding && in.lazyBinding->isNeeded();
+}
 
 void StubHelperSection::writeTo(uint8_t *buf) const {
   target->writeStubHelperHeader(buf);
@@ -1787,6 +1819,142 @@ void ObjCImageInfoSection::writeTo(uint8_t *buf) const {
   uint32_t flags = info.hasCategoryClassProperties ? 0x40 : 0x0;
   flags |= info.swiftVersion << 8;
   write32le(buf + 4, flags);
+}
+
+ChainedFixupsSection::ChainedFixupsSection()
+    : LinkEditSection(segment_names::linkEdit, section_names::chainFixups) {}
+
+void ChainedFixupsSection::writeTo(uint8_t *buf) const {
+  memcpy(buf, contents.data(), contents.size_in_bytes());
+  memcpy(buf + contents.size_in_bytes(), symtab.data(), symtab.size());
+}
+
+void ChainedFixupsSection::finalizeContents() {
+  assert(target->wordSize == 8 && "32-bit targets not supported");
+  if (fixups.empty())
+    return;
+
+  llvm::raw_svector_ostream os{contents};
+
+  dyld_chained_fixups_header header;
+  header.fixups_version = 0;
+  header.starts_offset = llvm::alignTo<8>(sizeof(header));
+  header.imports_offset = 0;                   // Filled in later
+  header.symbols_offset = 0;                   // Filled in later
+  header.imports_count = 0;                    // FIXME
+  header.imports_format = DYLD_CHAINED_IMPORT; // FIXME
+  header.symbols_format = 0;
+  os.write((const char *)&header, sizeof(header));
+  while ((contents.size() & 7) != 0)
+    os.write('\0');
+  size_t inImageOff = contents.size();
+
+  for (Location &loc : fixups)
+    loc.offset =
+        loc.isec->parent->getSegmentOffset() + loc.isec->getOffset(loc.offset);
+
+  llvm::sort(fixups, [](const Location &a, const Location &b) {
+    const OutputSegment *segA = a.isec->parent->parent;
+    const OutputSegment *segB = b.isec->parent->parent;
+    if (segA == segB)
+      return a.offset < b.offset;
+    return segA->addr < segB->addr;
+  });
+
+  uint64_t textSegAddr = 0;
+  for (const auto *seg : outputSegments)
+    if (seg->name == segment_names::text)
+      textSegAddr = seg->addr;
+
+  dyld_chained_starts_in_image startsInImage;
+  startsInImage.seg_count = outputSegments.back()->index + 1;
+  // Filled in later
+  startsInImage.seg_info_offset[0] = 0;
+  os.write((const char *)&startsInImage, sizeof(startsInImage));
+  size_t ind = contents.size();
+  uint32_t zero = 0;
+  for (int i = 1; i <= startsInImage.seg_count; ++i)
+    os.write((const char *)&zero, sizeof(zero));
+
+  auto segmentIndices = [&]() {
+    return reinterpret_cast<uint32_t *>(contents.begin() + ind) - 1;
+  };
+
+  for (size_t i = 0; i < fixups.size();) {
+    size_t startOff = contents.size();
+    const OutputSegment *seg = fixups[i].isec->parent->parent;
+    dyld_chained_starts_in_segment startsInSegment;
+    startsInSegment.size = 0;                             // todo
+    startsInSegment.page_size = 4 * 4096;                 // FIXME: x86
+    startsInSegment.pointer_format = DYLD_CHAINED_PTR_64; // FIXME?
+    startsInSegment.segment_offset = seg->addr - textSegAddr;
+    startsInSegment.page_count = 0;
+    startsInSegment.max_valid_pointer = 0;
+    os.write((const char *)&startsInSegment,
+             offsetof(dyld_chained_starts_in_segment, page_start));
+    segmentIndices()[seg->index] = startOff - inImageOff;
+    uint64_t pageStart = 0;
+    assert((pageStart % startsInSegment.page_size) == 0);
+    for (; i < fixups.size() &&
+           fixups[i].isec->parent->parent->index == seg->index;) {
+      while (pageStart <
+             (fixups[i].offset & ~(uint64_t)(startsInSegment.page_size - 1))) {
+        uint16_t none = DYLD_CHAINED_PTR_START_NONE;
+        os.write((const char *)&none, sizeof(none));
+        pageStart += startsInSegment.page_size;
+      }
+      uint16_t writeVal = fixups[i].offset - pageStart;
+      os.write((const char *)&writeVal, sizeof(writeVal));
+      ++i;
+      while (i < fixups.size() &&
+             fixups[i].isec->parent->parent->index == seg->index &&
+             (fixups[i].offset / startsInSegment.page_size) ==
+                 (pageStart / startsInSegment.page_size))
+        ++i;
+      pageStart += startsInSegment.page_size;
+    }
+    /*
+    // Is this needed?
+    while (pageStart < seg->addr + seg->vmSize) {
+      uint16_t none = DYLD_CHAINED_PTR_START_NONE;
+      os.write((const char *)&none, sizeof(none));
+      pageStart += startsInSegment.page_size;
+    }
+     */
+
+    reinterpret_cast<dyld_chained_starts_in_segment *>(contents.data() +
+                                                       startOff)
+        ->size = contents.size() - startOff;
+    reinterpret_cast<dyld_chained_starts_in_segment *>(contents.data() +
+                                                       startOff)
+        ->page_count = pageStart / startsInSegment.page_size;
+  }
+
+  auto *hdr = reinterpret_cast<dyld_chained_fixups_header *>(contents.data());
+  hdr->imports_offset = contents.size();
+  hdr->imports_count = bindings.size();
+
+  for (auto [sym, addend] : bindings) {
+    auto maybeIndex = resolvedBindings.find({sym, addend});
+    if (maybeIndex == resolvedBindings.end())
+      resolvedBindings.insert({{sym, addend}, resolvedBindings.size()});
+    else
+      continue;
+    assert(addend == 0);
+    dyld_chained_import import;
+    import.lib_ordinal = ordinalForSymbol(*sym);
+    import.weak_import = 0;
+    if (auto *dySym = dyn_cast<DylibSymbol>(sym))
+      import.weak_import = dySym->isWeakDef();
+    else if (auto *def = dyn_cast<Defined>(sym))
+      import.weak_import = def->isExternalWeakDef();
+    import.name_offset = symtab.size();
+    os.write((const char *)&import, sizeof(import));
+    symtab += sym->getName();
+    symtab += '\0';
+  }
+  hdr = reinterpret_cast<dyld_chained_fixups_header *>(contents.data());
+  hdr->symbols_offset = contents.size();
 }
 
 void macho::createSyntheticSymbols() {

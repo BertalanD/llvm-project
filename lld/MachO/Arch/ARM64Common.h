@@ -106,11 +106,14 @@ inline void writeStub(uint8_t *buf8, const uint32_t stubCode[3],
   constexpr size_t stubCodeSize = 3 * sizeof(uint32_t);
   uint64_t pcPageBits =
       pageBits(in.stubs->addr + sym.stubsIndex * stubCodeSize);
-  uint64_t lazyPointerVA =
-      in.lazyPointers->addr + sym.stubsIndex * LP::wordSize;
+  uint64_t pointerVA;
+  if (config->emitChainedFixups)
+    pointerVA = in.got->addr + sym.gotIndex * LP::wordSize;
+  else
+    pointerVA = in.lazyPointers->addr + sym.stubsIndex * LP::wordSize;
   encodePage21(&buf32[0], {&sym, "stub"}, stubCode[0],
-               pageBits(lazyPointerVA) - pcPageBits);
-  encodePageOff12(&buf32[1], stubCode[1], lazyPointerVA);
+               pageBits(pointerVA) - pcPageBits);
+  encodePageOff12(&buf32[1], stubCode[1], pointerVA);
   buf32[2] = stubCode[2];
 }
 
@@ -144,7 +147,10 @@ inline void writeStubHelperEntry(uint8_t *buf8,
   buf32[0] = stubHelperEntryCode[0];
   encodeBranch26(&buf32[1], {&sym, "stub helper"}, stubHelperEntryCode[1],
                  stubHelperHeaderVA - pcVA(1));
-  buf32[2] = sym.lazyBindOffset;
+  if (config->emitChainedFixups)
+    buf32[2] = sym.gotIndex;
+  else
+    buf32[2] = sym.lazyBindOffset;
 }
 
 template <class LP>

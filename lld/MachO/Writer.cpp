@@ -60,6 +60,7 @@ public:
 
   void openFile();
   void writeSections();
+  void chainFixups();
   void writeUuid();
   void writeCodeSignature();
   void writeOutputFile();
@@ -552,6 +553,40 @@ public:
   CodeSignatureSection *section;
 };
 
+class LCChainedFixups final : public LoadCommand {
+public:
+  LCChainedFixups(ChainedFixupsSection *section) : section(section) {}
+
+  uint32_t getSize() const override { return sizeof(linkedit_data_command); }
+
+  void writeTo(uint8_t *buf) const override {
+    auto *c = reinterpret_cast<linkedit_data_command *>(buf);
+    c->cmd = LC_DYLD_CHAINED_FIXUPS;
+    c->cmdsize = getSize();
+    c->dataoff = static_cast<uint32_t>(section->fileOff);
+    c->datasize = section->getSize();
+  }
+
+  ChainedFixupsSection *section;
+};
+
+class LCExportsTrie final : public LoadCommand {
+public:
+  LCExportsTrie(ExportSection *section) : section(section) {}
+
+  uint32_t getSize() const override { return sizeof(linkedit_data_command); }
+
+  void writeTo(uint8_t *buf) const override {
+    auto *c = reinterpret_cast<linkedit_data_command *>(buf);
+    c->cmd = LC_DYLD_EXPORTS_TRIE;
+    c->cmdsize = getSize();
+    c->dataoff = static_cast<uint32_t>(section->fileOff);
+    c->datasize = section->getSize();
+  }
+
+  ExportSection *section;
+};
+
 } // namespace
 
 void Writer::treatSpecialUndefineds() {
@@ -581,25 +616,39 @@ static void prepareBranchTarget(Symbol *sym) {
   if (auto *dysym = dyn_cast<DylibSymbol>(sym)) {
     if (in.stubs->addEntry(dysym)) {
       if (sym->isWeakDef()) {
-        in.binding->addEntry(dysym, in.lazyPointers->isec,
-                             sym->stubsIndex * target->wordSize);
-        in.weakBinding->addEntry(sym, in.lazyPointers->isec,
-                                 sym->stubsIndex * target->wordSize);
+        if (config->emitChainedFixups) {
+          // FIXME: Stubs don't point into lazyPointers
+          in.chainedFixups->addBinding(sym, in.lazyPointers->isec,
+                                       sym->stubsIndex * target->wordSize, 0);
+        } else {
+          in.binding->addEntry(dysym, in.lazyPointers->isec,
+                               sym->stubsIndex * target->wordSize);
+          in.weakBinding->addEntry(sym, in.lazyPointers->isec,
+                                   sym->stubsIndex * target->wordSize);
+        }
       } else {
-        in.lazyBinding->addEntry(dysym);
+        in.got->addEntry(dysym);
+        // assert(false);
+        // in.lazyBinding->addEntry(dysym);
       }
     }
   } else if (auto *defined = dyn_cast<Defined>(sym)) {
     if (defined->isExternalWeakDef()) {
       if (in.stubs->addEntry(sym)) {
-        in.rebase->addEntry(in.lazyPointers->isec,
-                            sym->stubsIndex * target->wordSize);
-        in.weakBinding->addEntry(sym, in.lazyPointers->isec,
-                                 sym->stubsIndex * target->wordSize);
+        if (config->emitChainedFixups) {
+          assert(false);
+        } else {
+          in.rebase->addEntry(in.lazyPointers->isec,
+                              sym->stubsIndex * target->wordSize);
+          in.weakBinding->addEntry(sym, in.lazyPointers->isec,
+                                   sym->stubsIndex * target->wordSize);
+        }
       }
     } else if (defined->interposable) {
-      if (in.stubs->addEntry(sym))
+      if (in.stubs->addEntry(sym)) {
+        assert(false);
         in.lazyBinding->addEntry(sym);
+      }
     }
   } else {
     llvm_unreachable("invalid branch target symbol type");
@@ -669,8 +718,12 @@ void Writer::scanRelocations() {
         // too...
         auto *referentIsec = r.referent.get<InputSection *>();
         r.referent = referentIsec->canonical();
-        if (!r.pcrel)
-          in.rebase->addEntry(isec, r.offset);
+        if (!r.pcrel) {
+          if (config->emitChainedFixups)
+            in.chainedFixups->addRebase(isec, r.offset);
+          else
+            in.rebase->addEntry(isec, r.offset);
+        }
       }
     }
   }
@@ -685,7 +738,7 @@ void Writer::scanSymbols() {
       if (!defined->isLive())
         continue;
       defined->canonicalize();
-      if (defined->overridesWeakDef)
+      if (defined->overridesWeakDef && in.weakBinding)
         in.weakBinding->addNonWeakDefinition(defined);
       if (!defined->isAbsolute() && isCodeSection(defined->isec))
         in.unwindInfo->addSymbol(defined);
@@ -739,8 +792,13 @@ template <class LP> void Writer::createLoadCommands() {
     seg->index = segIndex++;
   }
 
-  in.header->addLoadCommand(make<LCDyldInfo>(
-      in.rebase, in.binding, in.weakBinding, in.lazyBinding, in.exports));
+  if (in.chainedFixups) {
+    in.header->addLoadCommand(make<LCChainedFixups>(in.chainedFixups));
+    in.header->addLoadCommand(make<LCExportsTrie>(in.exports));
+  } else {
+    in.header->addLoadCommand(make<LCDyldInfo>(
+        in.rebase, in.binding, in.weakBinding, in.lazyBinding, in.exports));
+  }
   in.header->addLoadCommand(make<LCSymtab>(symtabSection, stringTableSection));
   in.header->addLoadCommand(
       make<LCDysymtab>(symtabSection, indirectSymtabSection));
@@ -1041,15 +1099,11 @@ void Writer::finalizeLinkEditSegment() {
   TimeTraceScope timeScope("Finalize __LINKEDIT segment");
   // Fill __LINKEDIT contents.
   std::vector<LinkEditSection *> linkEditSections{
-      in.rebase,
-      in.binding,
-      in.weakBinding,
-      in.lazyBinding,
-      in.exports,
-      symtabSection,
-      indirectSymtabSection,
-      dataInCodeSection,
-      functionStartsSection,
+      in.rebase,         in.binding,
+      in.weakBinding,    in.lazyBinding,
+      in.exports,        in.chainedFixups,
+      symtabSection,     indirectSymtabSection,
+      dataInCodeSection, functionStartsSection,
   };
   SmallVector<std::shared_future<void>> threadFutures;
   threadFutures.reserve(linkEditSections.size());
@@ -1110,6 +1164,31 @@ void Writer::writeSections() {
   });
 }
 
+void Writer::chainFixups() {
+  if (!config->emitChainedFixups)
+    return;
+
+  auto &fixups = in.chainedFixups->fixups;
+  if (fixups.empty())
+    return;
+
+  TimeTraceScope timeScope("Construct fixup chains");
+
+  constexpr uint64_t pageSize = 4 * 4096;
+  const uint64_t pageSizeMask = ~(uint64_t)(pageSize - 1);
+  for (size_t i = 0; i < fixups.size();) {
+    const OutputSegment *oseg = fixups[i].isec->parent->parent;
+    uint8_t *buf = buffer->getBufferStart() + oseg->fileOff;
+    ++i;
+    while (i < fixups.size() && fixups[i].isec->parent->parent == oseg &&
+           (fixups[i].offset / pageSize) == (fixups[i - 1].offset / pageSize)) {
+      reinterpret_cast<dyld_chained_ptr_64_rebase *>(buf + fixups[i - 1].offset)
+          ->next = (fixups[i].offset - fixups[i - 1].offset) / 4;
+      ++i;
+    }
+  }
+}
+
 // In order to utilize multiple cores, we first split the buffer into chunks,
 // compute a hash for each chunk, and then compute a hash value of the hash
 // values.
@@ -1152,6 +1231,7 @@ void Writer::writeOutputFile() {
   if (errorCount())
     return;
   writeSections();
+  chainFixups();
   writeUuid();
   writeCodeSignature();
 
@@ -1221,10 +1301,14 @@ void macho::createSyntheticSections() {
       make<DeduplicatedCStringSection>(section_names::objcMethname);
   in.wordLiteralSection =
       config->dedupLiterals ? make<WordLiteralSection>() : nullptr;
-  in.rebase = make<RebaseSection>();
-  in.binding = make<BindingSection>();
-  in.weakBinding = make<WeakBindingSection>();
-  in.lazyBinding = make<LazyBindingSection>();
+  if (config->emitChainedFixups) {
+    in.chainedFixups = make<ChainedFixupsSection>();
+  } else {
+    in.rebase = make<RebaseSection>();
+    in.binding = make<BindingSection>();
+    in.weakBinding = make<WeakBindingSection>();
+    in.lazyBinding = make<LazyBindingSection>();
+  }
   in.exports = make<ExportSection>();
   in.got = make<GotSection>();
   in.tlvPointers = make<TlvPointerSection>();

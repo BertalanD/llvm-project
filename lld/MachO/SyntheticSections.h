@@ -647,6 +647,51 @@ private:
   std::vector<const InputFile *> files; // files with image info
 };
 
+class ChainedFixupsSection final : public LinkEditSection {
+public:
+  ChainedFixupsSection();
+
+  bool isNeeded() const override { return !contents.empty(); }
+  uint64_t getRawSize() const override {
+    return contents.size() + symtab.size();
+  }
+  void finalizeContents() override;
+  void writeTo(uint8_t *buf) const override;
+
+  void addBinding(const Symbol *sym, const InputSection *isec, uint64_t offset,
+                  uint64_t addend = 0) {
+    fixups.push_back({isec, offset});
+    if (addend > 0xFF) {
+      bindings.insert({sym, addend});
+      fprintf(stderr, "WARNING: large addend\n");
+    } else
+      bindings.insert({sym, 0});
+  }
+
+  void addRebase(const InputSection *isec, uint64_t offset) {
+    fixups.push_back({isec, offset});
+  }
+
+  llvm::Optional<std::pair<uint32_t, uint64_t>>
+  getBinding(const Symbol *sym, uint64_t addend) const {
+    std::pair<const Symbol *, uint64_t> key = {sym, addend > 0xFF ? addend : 0};
+    auto entry = resolvedBindings.find(key);
+    if (entry == resolvedBindings.end())
+      return llvm::NoneType::None;
+    return std::pair{entry->second, addend > 0xff ? addend : 0};
+  }
+
+  std::vector<Location> fixups;
+  llvm::SetVector<std::pair<const Symbol *, uint64_t>> bindings;
+
+  llvm::DenseMap<std::pair<const Symbol *, uint64_t>, uint32_t>
+      resolvedBindings;
+
+private:
+  SmallVector<char, 128> contents;
+  SmallString<128> symtab;
+};
+
 struct InStruct {
   const uint8_t *bufferStart = nullptr;
   MachHeaderSection *header = nullptr;
@@ -668,6 +713,7 @@ struct InStruct {
   UnwindInfoSection *unwindInfo = nullptr;
   ObjCImageInfoSection *objCImageInfo = nullptr;
   ConcatInputSection *imageLoaderCache = nullptr;
+  ChainedFixupsSection *chainedFixups = nullptr;
 };
 
 extern InStruct in;

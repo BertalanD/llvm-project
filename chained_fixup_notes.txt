@@ -1,0 +1,21 @@
+Current model for dyld opcodes:
+1. scan relocations, record where bindings/rebases are needed
+2. construct linkedit segment from this data
+3. write sections while processing relocations => embedded addends for
+   rebases get written out
+
+
+Model for chained fixups:
+1. record all symbols referenced in bindings; assign an offset to them
+2. record all locations (segment index & page offset) that will have
+   bindings
+3. write linkedit
+   needs to know:
+   - each segment and page that has fixups; start offsets
+   - referenced symbols, as we construct a symbol table
+4. write entries into binary; because we are working on a page level,
+   creating the chains has to be done per OutputSegment instead of
+   OutputSection.
+   We should probably pre-fill these per section for perf
+   we need to do: resolve symbol name to offset (hash table lookup)
+                  inline addend shenanigans for weak bindings
