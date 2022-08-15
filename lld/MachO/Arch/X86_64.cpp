@@ -141,8 +141,12 @@ static constexpr uint8_t stub[] = {
 void X86_64::writeStub(uint8_t *buf, const Symbol &sym) const {
   memcpy(buf, stub, 2); // just copy the two nonzero bytes
   uint64_t stubAddr = in.stubs->addr + sym.stubsIndex * sizeof(stub);
-  writeRipRelative({&sym, "stub"}, buf, stubAddr, sizeof(stub),
-                   in.lazyPointers->addr + sym.stubsIndex * LP64::wordSize);
+  uint64_t pointerAddr;
+  if (config->emitChainedFixups)
+    pointerAddr = in.got->addr + sym.gotIndex * LP64::wordSize;
+  else
+    pointerAddr = in.lazyPointers->addr + sym.stubsIndex * LP64::wordSize;
+  writeRipRelative({&sym, "stub"}, buf, stubAddr, sizeof(stub), pointerAddr);
 }
 
 static constexpr uint8_t stubHelperHeader[] = {

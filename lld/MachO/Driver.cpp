@@ -925,12 +925,12 @@ PlatformType macho::removeSimulator(PlatformType platform) {
 }
 
 static bool dataConstDefault(const InputArgList &args) {
-  static const std::vector<std::pair<PlatformType, VersionTuple>> minVersion = {
-      {PLATFORM_MACOS, VersionTuple(10, 15)},
-      {PLATFORM_IOS, VersionTuple(13, 0)},
-      {PLATFORM_TVOS, VersionTuple(13, 0)},
-      {PLATFORM_WATCHOS, VersionTuple(6, 0)},
-      {PLATFORM_BRIDGEOS, VersionTuple(4, 0)}};
+  static const std::array<std::pair<PlatformType, VersionTuple>, 5> minVersion =
+      {{{PLATFORM_MACOS, VersionTuple(10, 15)},
+        {PLATFORM_IOS, VersionTuple(13, 0)},
+        {PLATFORM_TVOS, VersionTuple(13, 0)},
+        {PLATFORM_WATCHOS, VersionTuple(6, 0)},
+        {PLATFORM_BRIDGEOS, VersionTuple(4, 0)}}};
   PlatformType platform = removeSimulator(config->platformInfo.target.Platform);
   auto it = llvm::find_if(minVersion,
                           [&](const auto &p) { return p.first == platform; });
@@ -955,6 +955,51 @@ static bool dataConstDefault(const InputArgList &args) {
         "unsupported output type for determining data-const default");
   }
   return false;
+}
+
+static bool shouldEmitChainedFixups(const InputArgList &args) {
+  const Arg *arg = args.getLastArg(OPT_fixup_chains, OPT_no_fixup_chains);
+  if (arg && arg->getOption().matches(OPT_no_fixup_chains))
+    return false;
+
+  bool isRequested = arg != nullptr;
+
+  // Version numbers taken from the Xcode 13.3 release notes.
+  static const std::array<std::pair<PlatformType, VersionTuple>, 4> minVersion =
+      {{{PLATFORM_MACOS, VersionTuple(11, 0)},
+        {PLATFORM_IOS, VersionTuple(13, 4)},
+        {PLATFORM_TVOS, VersionTuple(14, 0)},
+        {PLATFORM_WATCHOS, VersionTuple(7, 0)}}};
+  PlatformType platform = removeSimulator(config->platformInfo.target.Platform);
+  auto it = llvm::find_if(minVersion,
+                          [&](const auto &p) { return p.first == platform; });
+  if (it != minVersion.end() && it->second > config->platformInfo.minimum) {
+    if (isRequested) {
+      warn("-fixup_chains requires " + getPlatformName(config->platform()) +
+           " " + it->second.getAsString() +
+           ", which is newer than target minimum of " +
+           config->platformInfo.minimum.getAsString());
+      return true;
+    }
+    return false;
+  }
+
+  static constexpr std::array<Architecture, 3> architectures = {
+      AK_x86_64, AK_x86_64h, AK_arm64};
+  if (!is_contained(architectures, config->arch())) {
+    if (isRequested)
+      error("-fixup_chains is only supported on x86_64 and arm64 targets");
+    return false;
+  }
+
+  if (!config->isPic) {
+    if (isRequested)
+      error("-fixup_chains is incompatible with -no_pie");
+    return false;
+  }
+
+  // TODO: Enable by default once stable.
+  return isRequested;
 }
 
 void SymbolPatterns::clear() {
@@ -1349,6 +1394,11 @@ bool macho::link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
     }
   }
 
+  config->isPic = config->outputType == MH_DYLIB ||
+                  config->outputType == MH_BUNDLE ||
+                  (config->outputType == MH_EXECUTE &&
+                   args.hasFlag(OPT_pie, OPT_no_pie, true));
+
   // Must be set before any InputSections and Symbols are created.
   config->deadStrip = args.hasArg(OPT_dead_strip);
 
@@ -1437,7 +1487,9 @@ bool macho::link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
   config->emitBitcodeBundle = args.hasArg(OPT_bitcode_bundle);
   config->emitDataInCodeInfo =
       args.hasFlag(OPT_data_in_code_info, OPT_no_data_in_code_info, true);
-  config->emitInitOffsets = args.hasArg(OPT_init_offsets);
+  config->emitChainedFixups = shouldEmitChainedFixups(args);
+  config->emitInitOffsets =
+      config->emitChainedFixups || args.hasArg(OPT_init_offsets);
   config->icfLevel = getICFLevel(args);
   config->dedupLiterals =
       args.hasFlag(OPT_deduplicate_literals, OPT_icf_eq, false) ||
@@ -1658,11 +1710,6 @@ bool macho::link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
 
     initLLVM(); // must be run before any call to addFile()
     createFiles(args);
-
-    config->isPic = config->outputType == MH_DYLIB ||
-                    config->outputType == MH_BUNDLE ||
-                    (config->outputType == MH_EXECUTE &&
-                     args.hasFlag(OPT_pie, OPT_no_pie, true));
 
     // Now that all dylibs have been loaded, search for those that should be
     // re-exported.
