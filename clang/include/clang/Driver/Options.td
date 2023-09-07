@@ -3227,6 +3227,12 @@ defm visibility_inlines_hidden_static_local_var : BoolFOption<"visibility-inline
             " inline C++ member functions will also be given hidden visibility by default">,
   NegFlag<SetFalse, [], "Disables -fvisibility-inlines-hidden-static-local-var"
          " (this is the default on non-darwin targets)">, BothFlags<[CC1Option]>>;
+defm visibility_inlines_hidden_function_template : BoolFOption<"visibility-inlines-hidden-function-template",
+  LangOpts<"VisibilityInlinesHiddenFunctionTemplate">, DefaultFalse,
+  PosFlag<SetTrue, [CC1Option],
+          "When -fvisibility-inlines-hidden is enabled, all template functions will be given"
+          " hidden visibility by default, even if they are not declared ``inline``">,
+  NegFlag<SetFalse>>;
 def fvisibility_ms_compat : Flag<["-"], "fvisibility-ms-compat">, Group<f_Group>,
   HelpText<"Give global types 'default' visibility and global functions and "
            "variables 'hidden' visibility by default">;
