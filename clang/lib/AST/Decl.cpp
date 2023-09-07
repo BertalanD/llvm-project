@@ -558,13 +558,19 @@ static bool useInlineVisibilityHidden(const NamedDecl *D) {
     TSK = MSI->getTemplateSpecializationKind();
   }
 
+  if (TSK == TSK_ExplicitInstantiationDeclaration ||
+      TSK == TSK_ExplicitInstantiationDefinition)
+    return false;
+
   const FunctionDecl *Def = nullptr;
-  // InlineVisibilityHidden only applies to definitions, and
-  // isInlined() only gives meaningful answers on definitions
-  // anyway.
-  return TSK != TSK_ExplicitInstantiationDeclaration &&
-    TSK != TSK_ExplicitInstantiationDefinition &&
-    FD->hasBody(Def) && Def->isInlined() && !Def->hasAttr<GNUInlineAttr>();
+  if (!FD->hasBody(Def))
+    return false;
+
+  if (Def->hasAttr<GNUInlineAttr>())
+    return false;
+
+  return Def->isInlined() || (TSK == TSK_ImplicitInstantiation &&
+                              Opts.VisibilityInlinesHiddenFunctionTemplate);
 }
 
 template <typename T> static bool isFirstInExternCContext(T *D) {
