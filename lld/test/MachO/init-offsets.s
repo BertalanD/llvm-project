@@ -12,7 +12,8 @@
 # RUN: llvm-objcopy --dump-section=__TEXT,__init_offsets=%t/section.bin %t/out
 # RUN: echo "__TEXT,__init_offsets contents:" >> %t/dump.txt
 # RUN: od -An -txI %t/section.bin >> %t/dump.txt
-# RUN: FileCheck --check-prefix=CONTENT %s < %t/dump.txt
+# RUN: FileCheck --check-prefix=CONTENT --implicit-check-not=_global_sym \
+# RUN:           --implicit-check-not=_local_sym %s < %t/dump.txt
 
 ## This test checks that:
 ## - __mod_init_func is replaced by __init_offsets.
@@ -21,6 +22,7 @@
 ##   command line, and in the order they show up within __mod_init_func.
 ## - for undefined and dylib symbols, stubs are created, and the offsets point to those.
 ## - offsets are relative to __TEXT's address, they aren't an absolute virtual address.
+## - symbols defined inside __mod_init_func are ignored.
 
 # FLAGS:      sectname __init_offsets
 # FLAGS-NEXT:  segname __TEXT
@@ -47,7 +49,7 @@
 # CONTENT: [[#%.8x, FIRST - TEXT]] [[#%.8x, ISNAN - TEXT]] [[#%.8x, UNDEF - TEXT]] [[#%.8x, SECOND - TEXT]]
 
 #--- first.s
-.globl _first_init, ___isnan, _main
+.globl _first_init, ___isnan, _main, _global_sym
 .text
 _first_init:
   ret
@@ -55,6 +57,7 @@ _main:
   ret
 
 .section __DATA,__mod_init_func,mod_init_funcs
+_global_sym:
 .quad _first_init
 .quad ___isnan
 
@@ -67,6 +70,7 @@ _second_init:
   ret
 
 .section __DATA,__mod_init_func,mod_init_funcs
+_local_sym:
 .quad _undefined
 .quad _second_init
 
