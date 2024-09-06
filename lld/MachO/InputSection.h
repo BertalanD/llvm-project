@@ -267,6 +267,11 @@ private:
   llvm::BitVector live;
 };
 
+// Get the canonical InputSection of the symbol.
+inline InputSection *Defined::isec() const {
+  return originalIsec ? originalIsec->canonical() : nullptr;
+}
+
 inline uint8_t sectionType(uint32_t flags) {
   return flags & llvm::MachO::SECTION_TYPE;
 }

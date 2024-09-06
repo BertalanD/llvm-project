@@ -116,11 +116,6 @@ std::string Defined::getSourceLocation() {
   return originalIsec->getSourceLocation(value);
 }
 
-// Get the canonical InputSection of the symbol.
-InputSection *Defined::isec() const {
-  return originalIsec ? originalIsec->canonical() : nullptr;
-}
-
 // Get the canonical unwind entry of the symbol.
 ConcatInputSection *Defined::unwindEntry() const {
   return originalUnwindEntry ? originalUnwindEntry->canonical() : nullptr;
