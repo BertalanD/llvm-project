@@ -95,6 +95,9 @@ uint64_t MachHeaderSection::getSize() const {
 static uint32_t cpuSubtype() {
   uint32_t subtype = target->cpuSubtype;
 
+  if (subtype == CPU_SUBTYPE_ARM64E)
+    return CPU_SUBTYPE_ARM64E_WITH_PTRAUTH_VERSION(0, false);
+
   if (config->outputType == MH_EXECUTE && !config->staticLink &&
       target->cpuSubtype == CPU_SUBTYPE_X86_64_ALL &&
       config->platform() == PLATFORM_MACOS &&
@@ -346,16 +349,67 @@ void NonLazyPointerSectionBase::addEntry(Symbol *sym) {
 void macho::writeChainedRebase(uint8_t *buf, uint64_t targetVA) {
   assert(config->emitChainedFixups);
   assert(target->wordSize == 8 && "Only 64-bit platforms are supported");
-  auto *rebase = reinterpret_cast<dyld_chained_ptr_64_rebase *>(buf);
-  rebase->target = targetVA & 0xf'ffff'ffff;
-  rebase->high8 = (targetVA >> 56);
-  rebase->reserved = 0;
-  rebase->next = 0;
-  rebase->bind = 0;
+
+  uint64_t encodedVA = 0;
+  switch (in.chainedFixups->pointerFormat()) {
+  case DYLD_CHAINED_PTR_64: {
+    // struct dyld_chained_ptr_64_rebase {
+    //   uint64_t target : 36;   // lower 36 bits of target VA
+    //   uint64_t high8 : 8;     // upper 8 bits of target VA
+    //   uint64_t reserved : 7;  // set to 0
+    //   uint64_t next : 12;     // filled in by Writer later
+    //   uint64_t bind : 1;      // set to 0
+    // };
+
+    uint64_t target36 = targetVA & 0xf'ffff'ffff;
+    uint64_t high8 = (targetVA >> 56) & 0xff;
+    write64le(buf, target36 | (high8 << 36));
+    encodedVA = target36 | high8 << 56;
+    break;
+  }
+  case DYLD_CHAINED_PTR_ARM64E_USERLAND24: {
+    uint64_t targetVMOffset = targetVA - in.header->addr;
+    if (true) {
+      // struct dyld_chained_ptr_arm64e_auth_rebase {
+      //   uint64_t target : 32;
+      //   uint64_t diversity : 16;
+      //   uint64_t addrDiv : 1;
+      //   uint64_t key : 2;
+      //   uint64_t next : 11;
+      //   uint64_t bind : 1;
+      //   uint64_t auth : 1;
+      // };
+
+      uint64_t target32 = targetVMOffset & 0xffff'ffff;
+      uint64_t diversity = 0;
+      uint64_t addrDiv = 0;
+      uint64_t key = 0;
+
+      write64le(buf, target32 | (diversity << 32) | (addrDiv << 48) |
+                         (key << 49) | (1ULL << 63));
+      encodedVA = target32 + in.header->addr;
+    } else {
+      // struct dyld_chained_ptr_arm64e_rebase {
+      //   uint64_t target : 43;
+      //   uint64_t high8 : 8;
+      //   uint64_t next : 11;
+      //   uint64_t bind : 1;
+      //   uint64_t auth : 1;
+      // };
+      uint64_t target43 = targetVMOffset & 0x7ff'ffff'ffff;
+      uint64_t high8 = (targetVMOffset >> 56) & 0xff;
+      write64le(buf, target43 | (high8 << 43));
+      encodedVA = (target43 | high8 << 56) + in.header->addr;
+    }
+    break;
+  }
+  default:
+    error("Unsupported chained fixup pointer format: " +
+          Twine(in.chainedFixups->pointerFormat()));
+  }
 
   // The fixup format places a 64 GiB limit on the output's size.
   // Should we handle this gracefully?
-  uint64_t encodedVA = rebase->target | ((uint64_t)rebase->high8 << 56);
   if (encodedVA != targetVA)
     error("rebase target address 0x" + Twine::utohexstr(targetVA) +
           " does not fit into chained fixup. Re-link with -no_fixup_chains");
@@ -364,13 +418,63 @@ void macho::writeChainedRebase(uint8_t *buf, uint64_t targetVA) {
 static void writeChainedBind(uint8_t *buf, const Symbol *sym, int64_t addend) {
   assert(config->emitChainedFixups);
   assert(target->wordSize == 8 && "Only 64-bit platforms are supported");
-  auto *bind = reinterpret_cast<dyld_chained_ptr_64_bind *>(buf);
   auto [ordinal, inlineAddend] = in.chainedFixups->getBinding(sym, addend);
-  bind->ordinal = ordinal;
-  bind->addend = inlineAddend;
-  bind->reserved = 0;
-  bind->next = 0;
-  bind->bind = 1;
+
+  switch (in.chainedFixups->pointerFormat()) {
+  case DYLD_CHAINED_PTR_64: {
+    // struct dyld_chained_ptr_64_bind {
+    //   uint64_t ordinal : 24;
+    //   uint64_t addend : 8;
+    //   uint64_t reserved : 19; // set to 0
+    //   uint64_t next : 12;     // filled in by Writer later
+    //   uint64_t bind : 1;      // set to 1
+    // };
+
+    if (!isUInt<24>(ordinal))
+      error("TODO");
+    if (!isUInt<8>(inlineAddend))
+      error("TODO");
+
+    write64le(buf, ordinal | (inlineAddend << 24) | (1ULL << 63));
+    break;
+  }
+  case DYLD_CHAINED_PTR_ARM64E_USERLAND24: {
+    if (true) {
+      // struct dyld_chained_ptr_arm64e_auth_bind24 {
+      //   uint64_t ordinal : 24;
+      //   uint64_t zero : 8;
+      //   uint64_t diversity : 16;
+      //   uint64_t addrDiv : 1;
+      //   uint64_t key : 2;
+      //   uint64_t next : 11;
+      //   uint64_t bind : 1;
+      //   uint64_t auth : 1;
+      // };
+      uint64_t diversity = 0;
+      uint64_t addrDiv = 0;
+      uint64_t key = 0;
+
+      write64le(buf, ordinal | (diversity << 32) | (addrDiv << 48) |
+                         (key << 49) | (3ULL << 62));
+    } else {
+      // struct dyld_chained_ptr_arm64e_bind24 {
+      //   uint64_t ordinal : 24;
+      //   uint64_t zero : 8;
+      //   uint64_t addend : 19;
+      //   uint64_t next : 11;
+      //   uint64_t bind : 1;
+      //   uint64_t auth : 1;
+      // };
+
+      // FIXME type (can be larger than 8 bits here!)
+      write64le(buf, ordinal | ((uint64_t)inlineAddend << 32) | (1ULL << 62));
+    }
+    break;
+  }
+  default:
+    error("Unsupported chained fixup pointer format: " +
+          Twine(in.chainedFixups->pointerFormat()));
+  }
 }
 
 void macho::writeChainedFixup(uint8_t *buf, const Symbol *sym, int64_t addend) {
@@ -702,7 +806,9 @@ void WeakBindingSection::writeTo(uint8_t *buf) const {
 }
 
 StubsSection::StubsSection()
-    : SyntheticSection(segment_names::text, section_names::stubs) {
+    : SyntheticSection(segment_names::text, config->arch() == AK_arm64e
+                                                ? section_names::authStubs
+                                                : section_names::stubs) {
   flags = S_SYMBOL_STUBS | S_ATTR_SOME_INSTRUCTIONS | S_ATTR_PURE_INSTRUCTIONS;
   // The stubs section comprises machine instructions, which are aligned to
   // 4 bytes on the archs we care about.
@@ -2300,7 +2406,11 @@ void macho::createSyntheticSymbols() {
 }
 
 ChainedFixupsSection::ChainedFixupsSection()
-    : LinkEditSection(segment_names::linkEdit, section_names::chainFixups) {}
+    : LinkEditSection(segment_names::linkEdit, section_names::chainFixups) {
+  // FIXME: Use DYLD_CHAINED_PTR_64_OFFSET on newer OS versions.
+  ptrFormat = config->arch() == AK_arm64e ? DYLD_CHAINED_PTR_ARM64E_USERLAND24
+                                          : DYLD_CHAINED_PTR_64;
+}
 
 bool ChainedFixupsSection::isNeeded() const {
   assert(config->emitChainedFixups);
@@ -2379,8 +2489,7 @@ size_t ChainedFixupsSection::SegmentInfo::writeTo(uint8_t *buf) const {
   auto *segInfo = reinterpret_cast<dyld_chained_starts_in_segment *>(buf);
   segInfo->size = getSize();
   segInfo->page_size = target->getPageSize();
-  // FIXME: Use DYLD_CHAINED_PTR_64_OFFSET on newer OS versions.
-  segInfo->pointer_format = DYLD_CHAINED_PTR_64;
+  segInfo->pointer_format = in.chainedFixups->pointerFormat();
   segInfo->segment_offset = oseg->addr - in.header->addr;
   segInfo->max_valid_pointer = 0; // not used on 64-bit
   segInfo->page_count = pageStarts.back().first + 1;

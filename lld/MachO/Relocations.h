@@ -38,8 +38,9 @@ enum class RelocAttrBits {
   TLV = 1 << 10,       // References a thread-local symbol
   LOAD = 1 << 11,      // Relaxable indirect load
   POINTER = 1 << 12,   // Non-relaxable indirect load (pointer is taken)
-  UNSIGNED = 1 << 13,  // *_UNSIGNED relocs
-  LLVM_MARK_AS_BITMASK_ENUM(/*LargestValue*/ (1 << 14) - 1),
+  UNSIGNED = 1 << 13,  // *_UNSIGNED relocs or AUTHENTICATED_POINTER
+  AUTH = 1 << 14,      // AUTHENTICATED_POINTER reloc
+  LLVM_MARK_AS_BITMASK_ENUM(/*LargestValue*/ (1 << 15) - 1),
 };
 // Note: SUBTRACTOR always pairs with UNSIGNED (a delta between two symbols).
 

@@ -25,6 +25,7 @@ static_library("MachO") {
   sources = [
     "Arch/ARM64.cpp",
     "Arch/ARM64Common.cpp",
+    "Arch/ARM64e.cpp",
     "Arch/ARM64_32.cpp",
     "Arch/X86_64.cpp",
     "BPSectionOrderer.cpp",

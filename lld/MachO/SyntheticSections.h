@@ -808,6 +808,8 @@ public:
   bool hasWeakBinding() const { return hasWeakBind; }
   bool hasNonWeakDefinition() const { return hasNonWeakDef; }
 
+  llvm::MachO::ChainedPointerFormat pointerFormat() const { return ptrFormat; }
+
 private:
   // Location::offset initially stores the offset within an InputSection, but
   // contains output segment offsets after finalizeContents().
@@ -835,6 +837,7 @@ private:
   bool hasWeakBind = false;
   bool hasNonWeakDef = false;
   llvm::MachO::ChainedImportFormat importFormat;
+  llvm::MachO::ChainedPointerFormat ptrFormat;
 };
 
 void writeChainedRebase(uint8_t *buf, uint64_t targetVA);
