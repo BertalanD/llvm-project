@@ -81,7 +81,7 @@ void ARM64e::writeStub(uint8_t *buf8, const Symbol &sym,
   uint64_t pcPageBits =
        pageBits(in.stubs->addr + sym.stubsIndex * sizeof(stubCode));
 
-  encodePage21(buf32, d, stubCode[0], pcPageBits - pageBits(pointerVA));
+  encodePage21(buf32, d, stubCode[0], pageBits(pointerVA) - pcPageBits);
   encodePageOff12(buf32 + 1, d, stubCode[1], pointerVA);
   write32le(buf32 + 2, stubCode[2]);
   write32le(buf32 + 3, stubCode[3]);
