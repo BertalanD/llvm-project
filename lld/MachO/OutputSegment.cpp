@@ -109,7 +109,8 @@ static int sectionOrder(OutputSection *osec) {
     // precedence over the general code section ordering.
     int knownPriority =
         StringSwitch<int>(osec->name)
-            .Cases(section_names::stubs, section_names::authStubs, -4)
+            .Case(section_names::authStubs, -5)
+            .Case(section_names::stubs, -4)
             .Case(section_names::stubHelper, -3)
             .Case(section_names::objcStubs, -2)
             .Case(section_names::initOffsets, -1)
@@ -148,8 +149,10 @@ static int sectionOrder(OutputSection *osec) {
       return std::numeric_limits<int>::max();
     default:
       return StringSwitch<int>(osec->name)
-          .Case(section_names::got, -3)
-          .Case(section_names::lazySymbolPtr, -2)
+          .Case(section_names::authGot, -5)
+          .Case(section_names::got, -4)
+          .Case(section_names::lazySymbolPtr, -3)
+          .Case(section_names::authPtr, -2)
           .Case(section_names::const_, -1)
           .Default(osec->inputOrder);
     }

@@ -517,8 +517,17 @@ void NonLazyPointerSectionBase::writeTo(uint8_t *buf) const {
   }
 }
 
+// FIXME: arm64e again splits GOT into two parts:
+//       - the first part contains non-signed pointers to address-taken symbols.
+//         (__got)
+//       - addresses of external functions which the stubs will jump to are
+//         signed with key=IA diversity=1 and are stored in (__auth_got)
+//       We currently only support the second kind.
 GotSection::GotSection()
-    : NonLazyPointerSectionBase(segment_names::data, section_names::got) {
+    : NonLazyPointerSectionBase(segment_names::data,
+                                config->arch() == AK_arm64e
+                                    ? section_names::authGot
+                                    : section_names::got) {
   flags = S_NON_LAZY_SYMBOL_POINTERS;
 }
 
