@@ -96,7 +96,7 @@ static uint32_t cpuSubtype() {
   uint32_t subtype = target->cpuSubtype;
 
   if (subtype == CPU_SUBTYPE_ARM64E)
-    return CPU_SUBTYPE_ARM64E_WITH_PTRAUTH_VERSION(0, false);
+    return CPU_SUBTYPE_ARM64E_WITH_PTRAUTH_VERSION(1, false);
 
   if (config->outputType == MH_EXECUTE && !config->staticLink &&
       target->cpuSubtype == CPU_SUBTYPE_X86_64_ALL &&
