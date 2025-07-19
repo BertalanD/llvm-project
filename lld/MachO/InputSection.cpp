@@ -254,17 +254,18 @@ void ConcatInputSection::writeTo(uint8_t *buf) {
         // contiguous).
         referentVA -= firstTLVDataSection->addr;
       } else if (needsFixup) {
-        writeChainedFixup(loc, referentSym, r.addend);
+        writeChainedFixup(loc, r);
         continue;
       }
     } else if (auto *referentIsec = r.referent.dyn_cast<InputSection *>()) {
       assert(!::shouldOmitFromOutput(referentIsec));
-      referentVA = referentIsec->getVA(r.addend);
 
       if (needsFixup) {
-        writeChainedRebase(loc, referentVA);
+        writeChainedFixup(loc, r);
         continue;
       }
+
+      referentVA = referentIsec->getVA(r.addend);
     }
     target->relocateOne(loc, r, referentVA, getVA() + r.offset);
   }

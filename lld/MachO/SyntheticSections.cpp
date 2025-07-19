@@ -346,7 +346,8 @@ void NonLazyPointerSectionBase::addEntry(Symbol *sym) {
   }
 }
 
-void macho::writeChainedRebase(uint8_t *buf, uint64_t targetVA) {
+static void writeChainedRebase(uint8_t *buf, uint64_t targetVA,
+                               std::optional<AuthInfo> auth) {
   assert(config->emitChainedFixups);
   assert(target->wordSize == 8 && "Only 64-bit platforms are supported");
 
@@ -369,7 +370,7 @@ void macho::writeChainedRebase(uint8_t *buf, uint64_t targetVA) {
   }
   case DYLD_CHAINED_PTR_ARM64E_USERLAND24: {
     uint64_t targetVMOffset = targetVA - in.header->addr;
-    if (true) {
+    if (auth) {
       // struct dyld_chained_ptr_arm64e_auth_rebase {
       //   uint64_t target : 32;
       //   uint64_t diversity : 16;
@@ -381,9 +382,9 @@ void macho::writeChainedRebase(uint8_t *buf, uint64_t targetVA) {
       // };
 
       uint64_t target32 = targetVMOffset & 0xffff'ffff;
-      uint64_t diversity = 0;
-      uint64_t addrDiv = 0;
-      uint64_t key = 0;
+      uint64_t diversity = auth->discriminator;
+      uint64_t addrDiv = auth->diversity;
+      uint64_t key = auth->key;
 
       write64le(buf, target32 | (diversity << 32) | (addrDiv << 48) |
                          (key << 49) | (1ULL << 63));
@@ -415,7 +416,8 @@ void macho::writeChainedRebase(uint8_t *buf, uint64_t targetVA) {
           " does not fit into chained fixup. Re-link with -no_fixup_chains");
 }
 
-static void writeChainedBind(uint8_t *buf, const Symbol *sym, int64_t addend) {
+static void writeChainedBind(uint8_t *buf, const Symbol *sym, int64_t addend,
+                             std::optional<AuthInfo> auth) {
   assert(config->emitChainedFixups);
   assert(target->wordSize == 8 && "Only 64-bit platforms are supported");
   auto [ordinal, inlineAddend] = in.chainedFixups->getBinding(sym, addend);
@@ -439,7 +441,7 @@ static void writeChainedBind(uint8_t *buf, const Symbol *sym, int64_t addend) {
     break;
   }
   case DYLD_CHAINED_PTR_ARM64E_USERLAND24: {
-    if (true) {
+    if (auth) {
       // struct dyld_chained_ptr_arm64e_auth_bind24 {
       //   uint64_t ordinal : 24;
       //   uint64_t zero : 8;
@@ -450,12 +452,9 @@ static void writeChainedBind(uint8_t *buf, const Symbol *sym, int64_t addend) {
       //   uint64_t bind : 1;
       //   uint64_t auth : 1;
       // };
-      uint64_t diversity = 0;
-      uint64_t addrDiv = 0;
-      uint64_t key = 0;
-
-      write64le(buf, ordinal | (diversity << 32) | (addrDiv << 48) |
-                         (key << 49) | (3ULL << 62));
+      write64le(buf, ordinal | ((uint64_t)auth->discriminator << 32) |
+                         ((uint64_t)auth->diversity << 48) |
+                         ((uint64_t)auth->key << 49) | (3ULL << 62));
     } else {
       // struct dyld_chained_ptr_arm64e_bind24 {
       //   uint64_t ordinal : 24;
@@ -477,17 +476,40 @@ static void writeChainedBind(uint8_t *buf, const Symbol *sym, int64_t addend) {
   }
 }
 
-void macho::writeChainedFixup(uint8_t *buf, const Symbol *sym, int64_t addend) {
+static void writeChainedFixupImpl(uint8_t *buf, const Symbol *sym,
+                                  int64_t addend,
+                                  std::optional<AuthInfo> auth) {
   if (needsBinding(sym))
-    writeChainedBind(buf, sym, addend);
+    writeChainedBind(buf, sym, addend, auth);
   else
-    writeChainedRebase(buf, sym->getVA() + addend);
+    writeChainedRebase(buf, sym->getVA() + addend, auth);
+}
+
+void macho::writeChainedFixup(uint8_t *buf, const Reloc &r) {
+  std::optional<AuthInfo> auth;
+  uint64_t addend = r.addend;
+  if (target->hasAttr(r.type, RelocAttrBits::AUTH)) {
+    // FIXME: Hack to get auth bits.
+    addend = r.addend & 0xffff'ffff;
+    uint16_t discriminator = (r.addend >> 32) & 0xffff;
+    uint16_t diversity = (r.addend >> 48) & 0x1;
+    uint16_t key = (r.addend >> 49) & 0x3;
+    auth = AuthInfo{discriminator, diversity, key};
+  }
+
+  if (const Symbol *sym = dyn_cast<Symbol *>(r.referent)) {
+    writeChainedFixupImpl(buf, sym, addend, auth);
+  } else {
+    const InputSection *isec = cast<InputSection *>(r.referent);
+    writeChainedRebase(buf, isec->getVA(addend), auth);
+  }
 }
 
 void NonLazyPointerSectionBase::writeTo(uint8_t *buf) const {
+  constexpr AuthInfo gotAuth{.discriminator = 0, .diversity = 1, .key = 0};
   if (config->emitChainedFixups) {
     for (const auto &[i, entry] : llvm::enumerate(entries))
-      writeChainedFixup(&buf[i * target->wordSize], entry, 0);
+      writeChainedFixupImpl(&buf[i * target->wordSize], entry, 0, gotAuth);
   } else {
     for (const auto &[i, entry] : llvm::enumerate(entries))
       if (auto *defined = dyn_cast<Defined>(entry))
@@ -2424,6 +2446,8 @@ void ChainedFixupsSection::addBinding(const Symbol *sym,
                                       const InputSection *isec, uint64_t offset,
                                       int64_t addend) {
   locations.emplace_back(isec, offset);
+  if ((uint64_t)addend >> 63)
+    addend = SignExtend64<32>(addend & 0xffff'ffff);
   int64_t outlineAddend = (addend < 0 || addend > 0xFF) ? addend : 0;
   auto [it, inserted] = bindings.insert(
       {{sym, outlineAddend}, static_cast<uint32_t>(bindings.size())});

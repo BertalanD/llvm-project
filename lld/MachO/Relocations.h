@@ -50,6 +50,12 @@ struct RelocAttrs {
   bool hasAttr(RelocAttrBits b) const { return (bits & b) == b; }
 };
 
+struct AuthInfo {
+  uint16_t discriminator;
+  uint16_t diversity : 1;
+  uint16_t key : 2;
+};
+
 struct Reloc {
   uint8_t type = llvm::MachO::GENERIC_RELOC_INVALID;
   bool pcrel = false;

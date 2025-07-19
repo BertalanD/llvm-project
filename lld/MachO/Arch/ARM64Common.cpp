@@ -19,6 +19,7 @@ using namespace lld::macho;
 int64_t ARM64Common::getEmbeddedAddend(MemoryBufferRef mb, uint64_t offset,
                                        const relocation_info rel) const {
   if (rel.r_type != ARM64_RELOC_UNSIGNED &&
+      rel.r_type != ARM64_RELOC_AUTHENTICATED_POINTER &&
       rel.r_type != ARM64_RELOC_SUBTRACTOR) {
     // All other reloc types should use the ADDEND relocation to store their
     // addends.
@@ -31,8 +32,10 @@ int64_t ARM64Common::getEmbeddedAddend(MemoryBufferRef mb, uint64_t offset,
   switch (rel.r_length) {
   case 2:
     return static_cast<int32_t>(read32le(loc));
-  case 3:
+  case 3: {
+    llvm::dbgs() << "read addend " << llvm::utohexstr(read64le(loc)) << "\n";
     return read64le(loc);
+  }
   default:
     llvm_unreachable("invalid r_length");
   }
