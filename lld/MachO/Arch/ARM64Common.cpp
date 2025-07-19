@@ -32,10 +32,8 @@ int64_t ARM64Common::getEmbeddedAddend(MemoryBufferRef mb, uint64_t offset,
   switch (rel.r_length) {
   case 2:
     return static_cast<int32_t>(read32le(loc));
-  case 3: {
-    llvm::dbgs() << "read addend " << llvm::utohexstr(read64le(loc)) << "\n";
+  case 3:
     return read64le(loc);
-  }
   default:
     llvm_unreachable("invalid r_length");
   }
