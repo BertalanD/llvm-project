@@ -87,6 +87,14 @@ void ARM64Common::relocateOne(uint8_t *loc, const Reloc &r, uint64_t value,
     assert(!r.pcrel);
     encodePageOff12(loc32, r, base, value);
     break;
+  case ARM64_RELOC_AUTHENTICATED_POINTER: {
+    // FIXME: ICF uses this for zeroing out embedded addends. Writing this
+    // relocation to the output file makes no sense (pointers can only be signed
+    // at run time)
+    // r.addend contains the ptrauth metadata right now.
+    write64le(loc, (r.addend & 0xffff'ffff'0000'0000) | value);
+    break;
+  }
   default:
     llvm_unreachable("unexpected relocation type");
   }
