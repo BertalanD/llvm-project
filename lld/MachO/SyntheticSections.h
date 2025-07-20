@@ -136,6 +136,11 @@ public:
   GotSection();
 };
 
+class AuthGotSection final : public NonLazyPointerSectionBase {
+public:
+  AuthGotSection();
+};
+
 class TlvPointerSection final : public NonLazyPointerSectionBase {
 public:
   TlvPointerSection();
@@ -854,6 +859,7 @@ struct InStruct {
   LazyBindingSection *lazyBinding = nullptr;
   ExportSection *exports = nullptr;
   GotSection *got = nullptr;
+  AuthGotSection *authGot = nullptr;
   TlvPointerSection *tlvPointers = nullptr;
   LazyPointerSection *lazyPointers = nullptr;
   StubsSection *stubs = nullptr;

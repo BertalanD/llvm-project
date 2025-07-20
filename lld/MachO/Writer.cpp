@@ -1399,6 +1399,9 @@ void macho::createSyntheticSections() {
   }
   in.exports = make<ExportSection>();
   in.got = make<GotSection>();
+  if (config->arch() == AK_arm64e) {
+    in.authGot = make<AuthGotSection>();
+  }
   in.tlvPointers = make<TlvPointerSection>();
   in.stubs = make<StubsSection>();
   in.objcStubs = make<ObjCStubsSection>();

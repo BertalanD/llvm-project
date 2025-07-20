@@ -338,11 +338,19 @@ void macho::addNonLazyBindingEntries(const Symbol *sym,
 }
 
 void NonLazyPointerSectionBase::addEntry(Symbol *sym) {
+  uint32_t index;
   if (entries.insert(sym)) {
-    assert(!sym->isInGot());
-    sym->gotIndex = entries.size() - 1;
+    // FIXME: Hack
+    if (name == section_names::authGot) {
+      // HACK: repurpose lazyBindOffset (not used with chained fixups) to mean
+      // __auth_got index.
+      index = sym->lazyBindOffset = entries.size() - 1;
+    } else {
+      assert(!sym->isInGot());
+      index = sym->gotIndex = entries.size() - 1;
+    }
 
-    addNonLazyBindingEntries(sym, isec, sym->gotIndex * target->wordSize);
+    addNonLazyBindingEntries(sym, isec, index * target->wordSize);
   }
 }
 
@@ -507,9 +515,14 @@ void macho::writeChainedFixup(uint8_t *buf, const Reloc &r) {
 
 void NonLazyPointerSectionBase::writeTo(uint8_t *buf) const {
   constexpr AuthInfo gotAuth{.discriminator = 0, .diversity = 1, .key = 0};
+
+  // FIXME: Hack; Does TlvPointerSection need auth?
+  auto auth = name == section_names::authGot ? std::make_optional(gotAuth)
+                                             : std::nullopt;
+
   if (config->emitChainedFixups) {
     for (const auto &[i, entry] : llvm::enumerate(entries))
-      writeChainedFixupImpl(&buf[i * target->wordSize], entry, 0, gotAuth);
+      writeChainedFixupImpl(&buf[i * target->wordSize], entry, 0, auth);
   } else {
     for (const auto &[i, entry] : llvm::enumerate(entries))
       if (auto *defined = dyn_cast<Defined>(entry))
@@ -517,17 +530,13 @@ void NonLazyPointerSectionBase::writeTo(uint8_t *buf) const {
   }
 }
 
-// FIXME: arm64e again splits GOT into two parts:
-//       - the first part contains non-signed pointers to address-taken symbols.
-//         (__got)
-//       - addresses of external functions which the stubs will jump to are
-//         signed with key=IA diversity=1 and are stored in (__auth_got)
-//       We currently only support the second kind.
 GotSection::GotSection()
-    : NonLazyPointerSectionBase(segment_names::data,
-                                config->arch() == AK_arm64e
-                                    ? section_names::authGot
-                                    : section_names::got) {
+    : NonLazyPointerSectionBase(segment_names::data, section_names::got) {
+  flags = S_NON_LAZY_SYMBOL_POINTERS;
+}
+
+AuthGotSection::AuthGotSection()
+    : NonLazyPointerSectionBase(segment_names::data, section_names::authGot) {
   flags = S_NON_LAZY_SYMBOL_POINTERS;
 }
 
@@ -854,8 +863,13 @@ uint64_t StubsSection::getSize() const {
 void StubsSection::writeTo(uint8_t *buf) const {
   size_t off = 0;
   for (const Symbol *sym : entries) {
-    uint64_t pointerVA =
-        config->emitChainedFixups ? sym->getGotVA() : sym->getLazyPtrVA();
+    uint64_t pointerVA;
+    if (in.authGot)
+      pointerVA = in.authGot->getVA(sym->lazyBindOffset);
+    else if (config->emitChainedFixups)
+      pointerVA = sym->getGotVA();
+    else
+      pointerVA = sym->getLazyPtrVA();
     target->writeStub(buf + off, *sym, pointerVA);
     off += target->stubSize;
   }
@@ -895,7 +909,9 @@ void StubsSection::addEntry(Symbol *sym) {
   if (inserted) {
     sym->stubsIndex = entries.size() - 1;
 
-    if (config->emitChainedFixups)
+    if (in.authGot)
+      in.authGot->addEntry(sym);
+    else if (config->emitChainedFixups)
       in.got->addEntry(sym);
     else
       addBindingsForStub(sym);
@@ -1620,6 +1636,8 @@ uint32_t IndirectSymtabSection::getNumSymbols() const {
                   in.stubs->getEntries().size();
   if (!config->emitChainedFixups)
     size += in.stubs->getEntries().size();
+  if (in.authGot)
+    size += in.authGot->getEntries().size();
   return size;
 }
 
@@ -1630,6 +1648,10 @@ bool IndirectSymtabSection::isNeeded() const {
 
 void IndirectSymtabSection::finalizeContents() {
   uint32_t off = 0;
+  if (in.authGot) {
+    in.authGot->reserved1 = off;
+    off += in.authGot->getEntries().size();
+  }
   in.got->reserved1 = off;
   off += in.got->getEntries().size();
   in.tlvPointers->reserved1 = off;
@@ -1649,6 +1671,12 @@ static uint32_t indirectValue(const Symbol *sym) {
 
 void IndirectSymtabSection::writeTo(uint8_t *buf) const {
   uint32_t off = 0;
+  if (in.authGot) {
+    for (const Symbol *sym : in.authGot->getEntries()) {
+      write32le(buf + off * sizeof(uint32_t), indirectValue(sym));
+      ++off;
+    }
+  }
   for (const Symbol *sym : in.got->getEntries()) {
     write32le(buf + off * sizeof(uint32_t), indirectValue(sym));
     ++off;
