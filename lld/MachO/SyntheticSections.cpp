@@ -1078,8 +1078,11 @@ void ObjCStubsSection::setUp() {
                          "lazy binding (normally in libobjc.dylib)");
   objcMsgSend->used = true;
   if (config->objcStubsMode == ObjCStubsMode::fast) {
-    in.got->addEntry(objcMsgSend);
-    assert(objcMsgSend->isInGot());
+    if (in.authGot)
+      in.authGot->addEntry(objcMsgSend);
+    else
+      in.got->addEntry(objcMsgSend);
+    // assert(objcMsgSend->isInGot());
   } else {
     assert(config->objcStubsMode == ObjCStubsMode::small);
     // In line with ld64's behavior, when objc_msgSend is a direct symbol,

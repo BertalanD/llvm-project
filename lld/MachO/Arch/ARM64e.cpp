@@ -96,10 +96,37 @@ void ARM64e::writeStubHelperEntry(uint8_t *buf8, const Symbol &sym,
   assert(false && "writeStubHelperEntry: lazy binding is not supported for ARM64e");
 }
 
+// FIXME: the comments are off in ARM64.cpp
+static constexpr uint32_t objcStubsFastCode[] = {
+    0x90000001, // adrp  x1, @selector("foo")@page
+    0xf9400021, // ldr   x1, [x1, @selector("foo")@pageoff]
+    0x90000011, // adrp  x17, _got@page
+    0x91000231, // ldr   x17, [x17, _got@pageoff]
+    0xf9400230, // ldr   x16, [x17]
+    0xd71f0a11, // braa  x16, x17
+    0xd4200020, // brk   #0x1
+    0xd4200020, // brk   #0x1
+};
+
+static constexpr uint32_t objcStubsSmallCode[] = {
+    0x90000001, // adrp  x1, __objc_selrefs@page
+    0xf9400021, // ldr   x1, [x1, @selector("foo")@pageoff]
+    0x14000000, // b     _objc_msgSend
+};
+
 void ARM64e::writeObjCMsgSendStub(uint8_t *buf, Symbol *sym, uint64_t stubsAddr,
                                  uint64_t &stubOffset, uint64_t selrefVA,
                                  Symbol *objcMsgSend) const {
-  assert(false && "implement writeObjCMsgSendStub for arm64e");
+  if (config->objcStubsMode == ObjCStubsMode::fast) {
+    uint64_t objcMsgSendAddr = in.authGot->addr;
+    uint64_t objcMsgSendIndex = objcMsgSend->lazyBindOffset; // XXX
+    ::writeObjCMsgSendFastStub<LP64>(buf, objcStubsFastCode, sym, stubsAddr,
+                                     stubOffset, selrefVA, objcMsgSendAddr,
+                                     objcMsgSendIndex);
+  } else {
+    assert(false && "TODO: implement small ObjC stubs for arm64e");
+  }
+  stubOffset += target->objcStubsFastSize;
 }
 
 static constexpr uint32_t thunkCode[] = {};
@@ -130,6 +157,11 @@ ARM64e::ARM64e() : ARM64Common(LP64()) {
 
   stubSize = sizeof(stubCode);
   thunkSize = sizeof(thunkCode);
+
+  objcStubsFastSize = sizeof(objcStubsFastCode);
+  objcStubsFastAlignment = 32;
+  objcStubsSmallSize = sizeof(objcStubsSmallCode);
+  objcStubsSmallAlignment = 4;
 
   // Branch immediate is two's complement 26 bits, which is implicitly
   // multiplied by 4 (since all functions are 4-aligned: The branch range
