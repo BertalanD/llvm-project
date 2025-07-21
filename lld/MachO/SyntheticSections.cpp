@@ -2491,6 +2491,8 @@ void ChainedFixupsSection::addBinding(const Symbol *sym,
   locations.emplace_back(isec, offset);
   if ((uint64_t)addend >> 63)
     addend = SignExtend64<32>(addend & 0xffff'ffff);
+  // FIXME: If we can inline (non-auth binding) but there is an outlined entry
+  //        with the same addend, just return that?
   int64_t outlineAddend = (addend < 0 || addend > 0xFF || isAuth) ? addend : 0;
   auto [it, inserted] = bindings.insert(
       {{sym, outlineAddend}, static_cast<uint32_t>(bindings.size())});
