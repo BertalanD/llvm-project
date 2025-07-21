@@ -800,7 +800,7 @@ public:
     locations.emplace_back(isec, offset);
   }
   void addBinding(const Symbol *dysym, const InputSection *isec,
-                  uint64_t offset, int64_t addend = 0);
+                  uint64_t offset, int64_t addend, bool isAuth);
 
   void setHasNonWeakDefinition() { hasNonWeakDef = true; }
 

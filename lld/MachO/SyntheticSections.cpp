@@ -309,10 +309,10 @@ NonLazyPointerSectionBase::NonLazyPointerSectionBase(const char *segname,
 
 void macho::addNonLazyBindingEntries(const Symbol *sym,
                                      const InputSection *isec, uint64_t offset,
-                                     int64_t addend) {
+                                     int64_t addend, bool isAuth) {
   if (config->emitChainedFixups) {
     if (needsBinding(sym))
-      in.chainedFixups->addBinding(sym, isec, offset, addend);
+      in.chainedFixups->addBinding(sym, isec, offset, addend, isAuth);
     else if (isa<Defined>(sym))
       in.chainedFixups->addRebase(isec, offset);
     else
@@ -339,18 +339,21 @@ void macho::addNonLazyBindingEntries(const Symbol *sym,
 
 void NonLazyPointerSectionBase::addEntry(Symbol *sym) {
   uint32_t index;
+  bool isAuth;
   if (entries.insert(sym)) {
     // FIXME: Hack
     if (name == section_names::authGot) {
       // HACK: repurpose lazyBindOffset (not used with chained fixups) to mean
       // __auth_got index.
       index = sym->lazyBindOffset = entries.size() - 1;
+      isAuth = true;
     } else {
       assert(!sym->isInGot());
       index = sym->gotIndex = entries.size() - 1;
+      isAuth = false;
     }
 
-    addNonLazyBindingEntries(sym, isec, index * target->wordSize);
+    addNonLazyBindingEntries(sym, isec, index * target->wordSize, isAuth);
   }
 }
 
@@ -2484,11 +2487,11 @@ bool ChainedFixupsSection::isNeeded() const {
 
 void ChainedFixupsSection::addBinding(const Symbol *sym,
                                       const InputSection *isec, uint64_t offset,
-                                      int64_t addend) {
+                                      int64_t addend, bool isAuth) {
   locations.emplace_back(isec, offset);
   if ((uint64_t)addend >> 63)
     addend = SignExtend64<32>(addend & 0xffff'ffff);
-  int64_t outlineAddend = (addend < 0 || addend > 0xFF) ? addend : 0;
+  int64_t outlineAddend = (addend < 0 || addend > 0xFF || isAuth) ? addend : 0;
   auto [it, inserted] = bindings.insert(
       {{sym, outlineAddend}, static_cast<uint32_t>(bindings.size())});
 
