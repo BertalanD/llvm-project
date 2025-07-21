@@ -353,7 +353,7 @@ void NonLazyPointerSectionBase::addEntry(Symbol *sym) {
       isAuth = false;
     }
 
-    addNonLazyBindingEntries(sym, isec, index * target->wordSize, isAuth);
+    addNonLazyBindingEntries(sym, isec, index * target->wordSize, 0, isAuth);
   }
 }
 
@@ -431,7 +431,8 @@ static void writeChainedBind(uint8_t *buf, const Symbol *sym, int64_t addend,
                              std::optional<AuthInfo> auth) {
   assert(config->emitChainedFixups);
   assert(target->wordSize == 8 && "Only 64-bit platforms are supported");
-  auto [ordinal, inlineAddend] = in.chainedFixups->getBinding(sym, addend);
+  auto [ordinal, inlineAddend] =
+      in.chainedFixups->getBinding(sym, addend, auth.has_value());
 
   switch (in.chainedFixups->pointerFormat()) {
   case DYLD_CHAINED_PTR_64: {
@@ -2496,7 +2497,6 @@ void ChainedFixupsSection::addBinding(const Symbol *sym,
   int64_t outlineAddend = (addend < 0 || addend > 0xFF || isAuth) ? addend : 0;
   auto [it, inserted] = bindings.insert(
       {{sym, outlineAddend}, static_cast<uint32_t>(bindings.size())});
-
   if (inserted) {
     symtabSize += sym->getName().size() + 1;
     hasWeakBind = hasWeakBind || needsWeakBind(*sym);
@@ -2508,8 +2508,9 @@ void ChainedFixupsSection::addBinding(const Symbol *sym,
 }
 
 std::pair<uint32_t, uint8_t>
-ChainedFixupsSection::getBinding(const Symbol *sym, int64_t addend) const {
-  int64_t outlineAddend = (addend < 0 || addend > 0xFF) ? addend : 0;
+ChainedFixupsSection::getBinding(const Symbol *sym, int64_t addend,
+                                 bool isAuth) const {
+  int64_t outlineAddend = (addend < 0 || addend > 0xFF || isAuth) ? addend : 0;
   auto it = bindings.find({sym, outlineAddend});
   assert(it != bindings.end() && "binding not found in the imports table");
   if (outlineAddend == 0)

@@ -805,8 +805,8 @@ public:
   void setHasNonWeakDefinition() { hasNonWeakDef = true; }
 
   // Returns an (ordinal, inline addend) tuple used by dyld_chained_ptr_64_bind.
-  std::pair<uint32_t, uint8_t> getBinding(const Symbol *sym,
-                                          int64_t addend) const;
+  std::pair<uint32_t, uint8_t> getBinding(const Symbol *sym, int64_t addend,
+                                          bool isAuth) const;
 
   const std::vector<Location> &getLocations() const { return locations; }
 
